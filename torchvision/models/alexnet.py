@@ -1,6 +1,10 @@
 import torch
 import torch.nn as nn
-from .utils import load_state_dict_from_url
+
+try:
+    from torch.hub import load_state_dict_from_url
+except ImportError:
+    from torch.utils.model_zoo import load_url as load_state_dict_from_url
 
 
 __all__ = ['AlexNet', 'alexnet']
@@ -10,6 +14,19 @@ model_urls = {
     'alexnet': 'https://download.pytorch.org/models/alexnet-owt-4df8aa71.pth',
 }
 
+class ReverseLayerF(Function):
+    # Forwards identity
+    # Sends backward reversed gradients
+    @staticmethod
+    def forward(ctx, x, alpha):
+        ctx.alpha = alpha
+
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        output = grad_output.neg() * ctx.alpha
+        return output, None
 
 class AlexNet(nn.Module):
 
@@ -40,26 +57,28 @@ class AlexNet(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(4096, num_classes),
         )
-        self.discriminator = nn.Sequential(
-            nn.Dropout(),
-            nn.Linear(256 * 6 * 6, 4096),
-            nn.ReLU(inplace=True),
-            nn.Dropout(),
-            nn.Linear(4096, 4096),
-            nn.ReLU(inplace=True),
-            nn.Linear(4096, 2),
-        )
+        self.discriminator = nn.Sequential()
 
-    def forward(self, x):
+    def forward(self, x, alpha=None):
+        
         x = self.features(x)
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
-        x = self.classifier(x)
-        x = self.discriminator(x)
+        
+        # If we pass alpha, we can assume we are training the discriminator
+        if alpha is not None:
+            # gradient reversal layer (backward gradients will be reversed)
+            reverse_x = ReverseLayerF.apply(x,alpha)
+            x = self.discriminator(reverse_x)
+        # If we don't pass alpha, we assume we are training with supervision
+        else:
+            # do something else
+            x = self.classifier(x)
+    
         return x
 
 
-def alexnet(pretrained=False, progress=True, **kwargs):
+def alexnet(pretrained=True, progress=False, num_classes=7, **kwargs):
     r"""AlexNet model architecture from the
     `"One weird trick..." <https://arxiv.org/abs/1404.5997>`_ paper.
 
@@ -72,4 +91,12 @@ def alexnet(pretrained=False, progress=True, **kwargs):
         state_dict = load_state_dict_from_url(model_urls['alexnet'],
                                               progress=progress)
         model.load_state_dict(state_dict)
+        
+        # Load weights for discriminator
+        model.discriminator = copy.deepcopy(model.classifier)
+
+        # Adjust for task
+        model.classifier[6] = nn.Linear(4096, num_classes)
+        model.discriminator[6] = nn.Linear(4096, 2)
+        
     return model
