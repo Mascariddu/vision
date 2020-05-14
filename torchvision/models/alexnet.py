@@ -67,6 +67,9 @@ class AlexNet(nn.Module):
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
         
+        # Flatten the features:
+        x = x.view(x.size(0), -1)
+        
         # If we pass alpha, we can assume we are training the discriminator
         if alpha is not None:
             # gradient reversal layer (backward gradients will be reversed)
